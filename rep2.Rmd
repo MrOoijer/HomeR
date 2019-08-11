@@ -1,0 +1,121 @@
+---
+title: "Replications of Brandsma 2016"
+author: "JBvR"
+date: "10 august 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require (myLib)
+```
+
+## Intro
+
+Replicate findings from Brandsma - De Bilt, 2016, Technical report; TR-356 - the homogenization of Dutch temperature records. The comments will be brief. The main purpoe is to have insight in and aa replication of the methods. We will not exactly replicate tables and figures. 
+
+## Sources
+
+On the KNMI site we found the unhomogenized and homogenized data from stations 
+
+1. Den Helder/De Kooy, 
+2. De Bilt, 
+3. Groningen/Eelde, 
+4. Vlissingen, and 
+5. Maastricht/Beek. 
+
+(235, 260, 280, 310 and 380). We did not yet find the parallel data so we cannot yet replicate the parallel part of the report.
+
+
+
+## Reading and processing data
+
+First we will make unhomogenized data series
+
+```{r}
+get_etm <- function(fname){
+    a<- readLines(fname)
+    b<- read.csv(text=a, skip=49, 
+                 header=FALSE, stringsAsFactors = FALSE)
+    names(b)<-  gsub("\\s", "", strsplit(a[48], ",")[[1]])
+    return(b)
+}
+
+ref_etm<- function(etm){
+  # need yy mm dd TN, TX, TG
+  etm$yy <- as.integer(substring(etm$YYYYMMDD,1,4))
+  etm$mm <- as.integer(substring(etm$YYYYMMDD,5,6))
+  etm$dd <- as.integer(substring(etm$YYYYMMDD,7,8))
+  
+  return(etm[, c("yy", "mm", "dd", "TX", "TN", "TG")])
+}
+
+get_pre <- function(fname){
+    a<- readLines(fname)
+    b<- read.csv(text=a, skip=13, 
+                 header=TRUE, stringsAsFactors = FALSE)
+    return(b[, -ncol(b)])
+}
+
+ref_pre<- function(etm){
+  # need yy mm dd TN, TX, TG
+  etm$yy <- as.integer(substring(etm$YYYYMMDD,1,4))
+  etm$mm <- as.integer(substring(etm$YYYYMMDD,5,6))
+  etm$dd <- as.integer(substring(etm$YYYYMMDD,7,8))
+  
+  return(etm[, c("yy", "mm", "dd", "TX", "TN", "TG")])
+}
+
+DeBilt_h <- ref_etm(get_etm("./input/etmgeg_260.txt"))
+DeBilt_u <- ref_pre(get_pre("./input/temp_260.txt"))
+DeBilt_u <- rbind(DeBilt_u, DeBilt_h[-(1:nrow(DeBilt_u)),])
+```
+
+
+## How to investigate changepoints?
+
+The data has so much _"noise"_ that accidental jumps might and will be detected as change points when we use a "naive" approach. Lets try by month first.
+
+```{r}
+mm_DeBilt_u <- aggregate(DeBilt_u[, c( "TX", "TN", "TG")], 
+  by = list(DeBilt_u$yy, DeBilt_u$mm ), 
+                             FUN=mean)
+names(mm_DeBilt_u) <- c("yy", "mm", "TX", "TN", "TG")
+mm_DeBilt_u <- mm_DeBilt_u [order(mm_DeBilt_u$yy, mm_DeBilt_u$mm),]
+
+# -------
+
+all_mms <- function(Tvalue){
+  work1 <- ts (mm_DeBilt_u[, Tvalue], start=1901, freq=12)/10 
+  work1 <- stl(work1 , s.window= 12)$time.series[,2]
+  work1<- window(work1, start=1930, end=1979.99)
+  ns_points= 1
+  range <- 0:length(work1)
+  require(splines)
+  result<- sapply(range, function(N)
+                  {cpt <- c(rep(0, N), 
+                            rep(1,length(work1)-N))
+                  t<- time(work1)
+                  l<- lm(work1 ~ t+ cpt +t*cpt)
+                  return(AIC(l))
+  })
+  
+  dd<- range[which(result== min(result))]
+  titl = sprintf("Changepoint for %s mnthly mean", Tvalue)
+  pretty_plot(work1, kleur=4, lwd=2, main=titl)
+  
+  l<- lm(work1 ~ time(work1))
+  N = dd
+  cpt <- c(rep(0, N), rep(1,length(work1)-N))
+  
+  t<- time(work1)
+  l<-lm(work1 ~t + cpt +t*cpt)
+  
+  pretty_plot(add=TRUE, work1-l$res, kleur=2, lwd=3)
+  return(l$fit[1+dd]- l$fit[dd])
+}
+
+all_mms("TX")
+all_mms("TG")
+all_mms("TN")
+```
