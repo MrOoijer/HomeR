@@ -1,0 +1,222 @@
+---
+title: "Replications of Brandsma 2016"
+author: "JBvR"
+date: "30 juli 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require (myLib)
+```
+
+## Intro
+
+Replicate findings from Brandsma - De Bilt, 2016, Technical report; TR-356 - the homogenization of Dutch temperature records. The comments will be brief. The main purpoe is to have insight in and aa replication of the methods. We will not exactly replicate tables and figures. 
+
+## Sources
+
+On the KNMI site we found the unhomogenized and homogenized data from stations 
+
+1. Den Helder/De Kooy, 
+2. De Bilt, 
+3. Groningen/Eelde, 
+4. Vlissingen, and 
+5. Maastricht/Beek. 
+
+(235, 260, 280, 310 and 380). We did not yet find th parallel data so we cannot yet replicate the parallel part of the report.
+
+## Percentiles phase
+
+When we have a sample without any knowledge of the distribution of the population, the only available tools come from the area of non-parametric statistics. That means we will start with the so-called empirical cumulative distribution function (e-cdf) for the observations $x_i, i= 1, ..., N$ 
+$$F(x) := |x_i <= x|)/(N+1)$$ 
+where $|v|$ is the length of the vector $v$.. 
+
+$F(x)$ is a stepfunction, so neither differentiable nor invertable.We have to approximate them, f.i. using interpolation. The _quantile_ function in R does just that. Given all observations, it fixes $F(min(x)) := 0$ and $F(max(x)) := 1$ interpolates all other values. 
+
+The R quantile function has 9 different methods availble. The first 3 relate to count data, the other 6 to continuous data. The classical commercial statistical packages such as SAS, SPSS, Stata and S-(plus) all had slightly different algorithms, so R, the Open Source succesor to S-(plus) has all these methods and more implemented. The default is the same as S. 
+
+Which one is the best? In the theory of non-parametric statistics they are equally valid because they have the same asymtotic behaviour. But otherwise it is completely undecidable. Simulation is not applicable, because we do not know how to daw a random sample from any unknown distribution. Hyndman, the author of the above R-function has added his owen favorite ("type 8") which according to him has some advantges. 
+
+## Reading and processing data
+
+```{r}
+inv_F <- function(s) quantile(s, seq(0.05, 0.95, by=0.05))
+
+pretty_inv_F <- function(aa, ...) { 
+  pretty_plot(data.frame(seq(0.05, 0.95, by=0.05), inv_F(aa)), ...)
+  }
+
+get_etm <- function(fname){
+    a<- readLines(fname)
+    b<- read.csv(text=a, skip=49, 
+                 header=FALSE, stringsAsFactors = FALSE)
+    names(b)<-  gsub("\\s", "", strsplit(a[48], ",")[[1]])
+    return(b)
+}
+
+ref_etm<- function(etm){
+  # need yy mm dd TN, TX, TG
+  etm$yy <- as.integer(substring(etm$YYYYMMDD,1,4))
+  etm$mm <- as.integer(substring(etm$YYYYMMDD,5,6))
+  etm$dd <- as.integer(substring(etm$YYYYMMDD,7,8))
+  
+  return(etm[, c("yy", "mm", "dd", "TX", "TN", "TG")])
+}
+
+
+get_pre <- function(fname){
+    a<- readLines(fname)
+    b<- read.csv(text=a, skip=13, 
+                 header=TRUE, stringsAsFactors = FALSE)
+    return(b[, -ncol(b)])
+}
+
+ref_pre<- function(etm){
+  # need yy mm dd TN, TX, TG
+  etm$yy <- as.integer(substring(etm$YYYYMMDD,1,4))
+  etm$mm <- as.integer(substring(etm$YYYYMMDD,5,6))
+  etm$dd <- as.integer(substring(etm$YYYYMMDD,7,8))
+  
+  return(etm[, c("yy", "mm", "dd", "TX", "TN", "TG")])
+}
+
+
+DeBilt_h <- ref_etm(get_etm("./input/etmgeg_260.txt"))
+DeBilt_u <- ref_pre(get_pre("./input/temp_260.txt"))
+DeBilt_u <- rbind(DeBilt_u, DeBilt_h[-(1:24350),])
+```
+
+
+Do monthly change point(s) analysis, first de-season it.  In fact our analysis is more like an "intervention analysis, as we know that "something happened between 1949 and 1952. So we do not have to look outside this range. 
+
+
+```{r}
+b<- complete.cases(DeBilt_u)
+m<- aggregate(DeBilt_u[b, c("TN", "TG", "TX")], by=list(DeBilt_u$mm[b]), FUN=mean)
+
+DeBilt_u_des <- DeBilt_u
+DeBilt_u_des$TN <- DeBilt_u_des$TN - 
+  rep(m$TN, 150*365)[1: nrow(DeBilt_u)]
+DeBilt_u_des$TG <- DeBilt_u_des$TG - 
+  rep(m$TG, 150*365)[1: nrow(DeBilt_u)]
+DeBilt_u_des$TX <- DeBilt_u_des$TX - 
+  rep(m$TX, 150*365)[1: nrow(DeBilt_u)]
+
+monthly_DeBilt_u_des <- aggregate(DeBilt_u_des[, c( "TX", "TN", "TG")], 
+  by = list(DeBilt_u_des$yy, DeBilt_u_des$mm ), 
+                             FUN=mean)
+names(monthly_DeBilt_u_des) <- c("yy", "mm", "TX", "TN", "TG")
+
+
+monthly_DeBilt_u_des <- monthly_DeBilt_u_des[
+  order(monthly_DeBilt_u_des$yy, monthly_DeBilt_u_des$mm),]
+```
+
+Analyse those TSeries
+
+```{r, fig.height= 8}
+
+fnd_cpt <- function(work1, titl, ns_points= 2, do_plot= TRUE){
+  # calculate range freq*(1949-start) to skip
+  # freq*3 to caluclate
+  f= frequency(work1); s<- floor(start(work1)[1])
+  range <- (0: (5*f))+f*(1949-s)
+  require(splines)
+  result<- sapply(range, function(N)
+              {cpt <- c(rep(0, N), 
+                        rep(1,length(work1)-N))
+              t<- time(work1)
+              l<- lm(work1 ~ ns(t, df=ns_points)+ cpt)
+              return(AIC(l))
+  })
+  
+  dd<- range[which(result== min(result))][1]
+
+  N = dd
+  cpt <- c(rep(0, N), rep(1,length(work1)-N))
+  t<- time(work1)
+  l<-lm(work1 ~ ns(t, ns_points)+ cpt )
+  if( do_plot)
+  {  
+      pretty_plot(work1, kleur=4, lwd=2, 
+                  main=titl, ccloc=0,
+                  ylim=c(-2,3))
+      pretty_plot(add=TRUE, work1-l$res, 
+                  kleur=2, lwd=3)
+  }    
+  return(list(value= l$fit[1+dd]- l$fit[dd], 
+              match= summary(l)))
+
+}
+
+one_month <- function(this_month, Tvalue, ns_points= 2, do_plot= TRUE)
+{
+    work1<- ts(monthly_DeBilt_u_des[, Tvalue],
+               start=1901, freq=12)/10
+    
+    b<- stl(work1, s.window= "periodic")
+    
+    
+    work1 <- window(b$time.series[,2], 
+                    start=c(1901, this_month), freq=1)
+   titl = sprintf("%s %s", Tvalue,
+                       month.abb[this_month])
+    return(fnd_cpt(work1, titl, ns_points=ns_points, 
+                   do_plot=do_plot))
+    }
+
+results_TX<-rep(0,12)
+op <- par(mfrow=c(4,3))
+for(mm in 1:12) results_TX[mm] <- -one_month(mm, "TX", ns_points=5)$value
+par(op)
+
+results_TG<-rep(0,12)
+op <- par(mfrow=c(4,3))
+for(mm in 1:12) results_TG[mm] <- -one_month(mm, "TG", ns_points=5)$value
+par(op)
+
+results_TN<-rep(0,12)
+op <- par(mfrow=c(4,3))
+for(mm in 1:12) results_TN[mm] <- -one_month(mm, "TN", ns_points=5)$value
+par(op)
+
+results<- data.frame(month=1:12, dTX= results_TX,
+                     dTG=results_TG, dTN= results_TN)
+
+knitr::kable(round(results, 3), caption="Per month avg adjustments")
+
+```
+
+```{r}
+
+pretty_plot(results[, 1:2], ylim=c(0,1), lwd=3, type="b", 
+            main="Delta per type per month", xat=1:12)
+pretty_plot(results[, c(1,3)], kleur = 4, add=T, lwd=3, type="b")
+pretty_plot(results[, c(1,4)], kleur = 2, add=T, lwd=3, type="b")
+
+```
+
+
+# Percentile bands
+
+Now compare on different temperature bands per month. Use aggregate again, but with a function that returns a vector.
+
+```{r}
+perc <- function(v) return(quantile(v, seq(0.05, 0.95, by=0.15)))
+
+perc_TX_db <- aggregate(DeBilt_u$TX, 
+          by=list(yy= DeBilt_u$yy, mm= DeBilt_u$mm), 
+          FUN= perc)
+
+perc_TX_db <- cbind(perc_TX_db[,1:2], perc_TX_db[,3]/10)
+
+# per percentile
+work1<- perc_TX_db[ perc_TX_db$mm == 9, '95%']
+
+work1 <- ts(work1-mean(work1), start=1901, freq=1)
+
+a<- fnd_cpt(work1, "", ns_points= 2, do_plot= TRUE)
+
+```
+
